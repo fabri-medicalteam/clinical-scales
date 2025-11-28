@@ -301,59 +301,182 @@ export default function Home() {
 
   const generatePythonCode = (data, vars, formula) => {
     const className = (data.scale_name || scaleName || 'Scale').replace(/[^a-zA-Z0-9]/g, '');
-    let varsCode = '';
+
+    // Generate variables dict with English definitions
+    let variablesDict = '';
     let calcCode = '';
-    
+    const suggestedTriggers = new Set();
+
     if (vars && vars.length > 0) {
-      varsCode = vars.map(v => {
-        if (v.type === 'select' && v.options) {
-          const optionsStr = v.options.map(o => `"${o.value}": ${o.points}`).join(', ');
-          return `    # ${v.description}: {${optionsStr}}`;
+      const varEntries = vars.map(v => {
+        let definition = v.description || v.name;
+
+        // Add variable-related terms to triggers
+        const varWords = definition.toLowerCase().split(/\s+/);
+        varWords.forEach(word => {
+          if (word.length > 3 && !['with', 'from', 'the', 'and', 'for'].includes(word)) {
+            suggestedTriggers.add(word.replace(/[^a-z]/g, ''));
+          }
+        });
+
+        if (v.unit) {
+          definition += ` (${v.unit})`;
         }
-        return `    # ${v.description} (${v.type})${v.unit ? ' [' + v.unit + ']' : ''}`;
-      }).join('\n');
-      
+
+        return `        "${v.name}": "${definition}"`;
+      }).join(',\n');
+
+      variablesDict = `{\n${varEntries}\n    }`;
+
       // Generate calculation code
-      if (data.calculationType === 'sum') {
-        calcCode = `
-    @staticmethod
-    def calculate(inputs):
-        score = 0
-        for key, value in inputs.items():
-            score += int(value) if isinstance(value, (int, str)) and str(value).lstrip('-').isdigit() else 0
-        return score`;
+      if (data.calculationType === 'sum' || formula === 'SUM_OF_POINTS') {
+        calcCode = `    score = 0
+    for key, value in inputs.items():
+        score += int(value) if isinstance(value, (int, str)) and str(value).lstrip('-').isdigit() else 0
+    return score`;
       } else if (formula && formula.includes('+')) {
-        calcCode = `
-    @staticmethod
-    def calculate(inputs):
-        # Formula: ${formula}
-        score = ${formula.replace(/([a-z_]+)/g, 'float(inputs.get("$1", 0))')}
-        return score`;
+        const pythonFormula = formula.replace(/([a-z_]+)/gi, (match) => `inputs.get("${match}", 0)`);
+        calcCode = `    # Formula: ${formula}
+    score = ${pythonFormula}
+    return score`;
       } else {
-        calcCode = `
-    @staticmethod
-    def calculate(inputs):
-        # Implement calculation logic
-        score = sum(int(v) for v in inputs.values() if str(v).lstrip('-').isdigit())
-        return score`;
+        calcCode = `    score = sum(int(v) for v in inputs.values() if str(v).lstrip('-').isdigit())
+    return score`;
       }
     }
 
+    // Extract one-sentence description
+    const description = data.description || `Clinical assessment scale for ${data.scale_name || scaleName}`;
+
+    // Add scale name terms to triggers
+    const scaleWords = (data.scale_name || scaleName || '').toLowerCase().split(/\s+/);
+    scaleWords.forEach(word => {
+      if (word.length > 2) {
+        suggestedTriggers.add(word.replace(/[^a-z]/g, ''));
+      }
+    });
+
+    // Build interpretation section (only with data from source)
+    let interpretationText = '';
+
+    // Risk stratification (only if interpretation data exists)
+    if (data.interpretation && Array.isArray(data.interpretation) && data.interpretation.length > 0) {
+      const riskLevels = data.interpretation.map(interp => {
+        const range = interp.range || '';
+        const meaning = interp.meaning || '';
+        const recommendation = interp.recommendation || '';
+
+        // Extract risk level terms for triggers
+        const riskWords = meaning.toLowerCase().split(/\s+/);
+        riskWords.forEach(word => {
+          if (word.length > 3) {
+            suggestedTriggers.add(word.replace(/[^a-z]/g, ''));
+          }
+        });
+
+        return `Score ${range}: ${meaning}${recommendation ? ' - ' + recommendation : ''}`;
+      }).join('\\n');
+
+      interpretationText = riskLevels;
+    }
+
+    // Variable interpretation (only if present in source)
+    if (data.variable_interpretation) {
+      interpretationText += '\\n\\nVARIABLE INTERPRETATION:\\n';
+      Object.entries(data.variable_interpretation).forEach(([varName, meaning]) => {
+        interpretationText += `- ${varName}: ${meaning}\\n`;
+      });
+    }
+
+    // Monitoring strategy (only if present in source)
+    if (data.monitoring_strategy && Array.isArray(data.monitoring_strategy)) {
+      interpretationText += '\\n\\nMONITORING STRATEGY:\\n';
+      data.monitoring_strategy.forEach(item => {
+        interpretationText += `- ${item}\\n`;
+
+        // Add monitoring terms to triggers
+        const monitorWords = item.toLowerCase().split(/\s+/);
+        monitorWords.forEach(word => {
+          if (word.length > 4) {
+            suggestedTriggers.add(word.replace(/[^a-z]/g, ''));
+          }
+        });
+      });
+    }
+
+    // Treatment modifications (only if present in source)
+    if (data.treatment_modifications && Array.isArray(data.treatment_modifications)) {
+      interpretationText += '\\n\\nTREATMENT MODIFICATIONS:\\n';
+      data.treatment_modifications.forEach(item => {
+        interpretationText += `- ${item}\\n`;
+
+        // Add treatment terms to triggers
+        const treatWords = item.toLowerCase().split(/\s+/);
+        treatWords.forEach(word => {
+          if (word.length > 4) {
+            suggestedTriggers.add(word.replace(/[^a-z]/g, ''));
+          }
+        });
+      });
+    }
+
+    // Build recommendation (only from source data)
+    let recommendationText = '';
+    if (data.recommendation) {
+      recommendationText = data.recommendation;
+    } else if (data.interpretation && data.interpretation.length > 0) {
+      // Fallback: use first interpretation recommendation if available
+      const firstRec = data.interpretation.find(i => i.recommendation);
+      if (firstRec) {
+        recommendationText = firstRec.recommendation;
+      }
+    }
+
+    // Convert triggers set to sorted array
+    const triggersArray = Array.from(suggestedTriggers)
+      .filter(t => t.length > 2)
+      .sort()
+      .slice(0, 20); // Limit to 20 most relevant
+
+    const triggersStr = triggersArray.map(t => `    "${t}"`).join(',\n');
+
     return `"""
 ${data.scale_name || scaleName}
-${data.description || ''}
+${description}
 Reference: ${data.reference || 'N/A'}
+
+STRICT RULE: All data in this file is derived ONLY from the extracted source text.
+No medical data, cutoffs, thresholds, or recommendations have been invented or inferred.
 """
 
-class ${className}:
-    \"\"\"
-    Variables:
-${varsCode}
-    \"\"\"
+SCALE_DATA = {
+    "name": "${data.scale_name || scaleName}",
+    "description": "${description}",
+    "variables": ${variablesDict},
+    "formula": "${formula || 'SUM_OF_POINTS'}",
+    "interpretation": """${interpretationText || 'Refer to source documentation for interpretation guidelines.'}""",
+    "recommendation": """${recommendationText || 'Consult clinical guidelines and source documentation.'}""",
+    "suggested_triggers": [
+${triggersStr}
+    ]
+}
+
+def calculate(inputs):
+    """
+    Calculate score based on input variables.
+
+    Args:
+        inputs (dict): Dictionary with variable names as keys
+
+    Returns:
+        float or int: Calculated score
+    """
 ${calcCode}
 
 # Example usage:
-# result = ${className}.calculate({"var1": value1, "var2": value2})
+# result = calculate({"var1": value1, "var2": value2})
+# print(f"Score: {result}")
+# print(f"Interpretation: {SCALE_DATA['interpretation']}")
 `;
   };
 
@@ -506,34 +629,44 @@ ${calcCode}
             role: 'user', 
             content: `Extract this clinical scale and return ONLY valid JSON (no markdown, no explanation).
 
-IMPORTANT: For the "formula" field:
-- If it's a point-based scale (like CHA2DS2-VASc, CURB-65), use: "SUM_OF_POINTS"
-- If it has a mathematical formula, write it using variable names (e.g., "(140 - age) * weight / (72 * creatinine)")
-- NEVER write descriptions like "Addition of points" - write actual formulas or "SUM_OF_POINTS"
+🚨 STRICT RULES - CRITICAL:
+1. NEVER create, guess, infer, or invent medical data not explicitly present in the source text
+2. NEVER add cutoffs, thresholds, ranges, treatments, or recommendations not in the source
+3. If a field is not mentioned in the source, OMIT it entirely from the JSON
+4. Only extract what is EXPLICITLY stated in the provided text
+5. All text must be in English
 
-For each variable with options, include a "points" value for each option.
+FORMULA RULES:
+- If point-based scale (like CHA2DS2-VASc, CURB-65): use "SUM_OF_POINTS"
+- If mathematical formula exists: write it using variable names (e.g., "(140 - age) * weight / (72 * creatinine)")
+- NEVER write descriptions like "Addition of points"
+
+INTERPRETATION RULES:
+- Only include risk levels/ranges that are EXPLICITLY mentioned in the source
+- Do NOT create risk categories if they don't exist in the source
+- Include the exact wording from the source
+
+OPTIONAL FIELDS (only include if present in source):
+- "variable_interpretation": {"var_name": "meaning"} - only if source explains individual variables
+- "monitoring_strategy": ["item1", "item2"] - only if source mentions monitoring
+- "treatment_modifications": ["rule1", "rule2"] - only if source mentions treatment changes
+- "recommendation": "text" - general recommendation if present in source
 
 Return this exact JSON structure:
 {
-  "scale_name": "Name of the scale",
-  "scale_class_name": "ScaleNameNoSpaces",
-  "description": "Brief description",
-  "reference": "Author, Journal, Year",
+  "scale_name": "Name of the scale in English",
+  "description": "One-sentence clinical description in English",
+  "reference": "Author, Journal, Year (if available)",
   "calculationType": "sum" or "formula",
   "variables": [
     {
       "name": "variable_name",
-      "type": "select",
-      "description": "Description",
+      "type": "select" or "number",
+      "description": "Short English definition",
       "options": [
         {"value": "0", "label": "No", "points": 0},
         {"value": "1", "label": "Yes", "points": 1}
-      ]
-    },
-    {
-      "name": "numeric_var",
-      "type": "number",
-      "description": "Description",
+      ],
       "min": 0,
       "max": 100,
       "unit": "mg/dL"
@@ -541,9 +674,21 @@ Return this exact JSON structure:
   ],
   "formula": "SUM_OF_POINTS or actual mathematical formula",
   "interpretation": [
-    {"range": "0-1", "meaning": "Low risk", "recommendation": "..."}
-  ]
+    {"range": "0-1", "meaning": "Low risk", "recommendation": "minimal monitoring"}
+  ],
+  "variable_interpretation": {
+    "var_name": "Interpretation from source only"
+  },
+  "monitoring_strategy": [
+    "Strategy item from source only"
+  ],
+  "treatment_modifications": [
+    "Treatment rule from source only"
+  ],
+  "recommendation": "General clinical recommendation from source in English"
 }
+
+REMEMBER: Only include fields that are EXPLICITLY present in the source text. Do not add, infer, or create any medical information.
 
 Content to extract:
 ${inputText}`
