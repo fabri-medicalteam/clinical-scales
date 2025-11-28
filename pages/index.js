@@ -18,6 +18,9 @@ export default function Home() {
   const [showAutoTests, setShowAutoTests] = useState(false);
   const [slackSending, setSlackSending] = useState(false);
   const [slackSent, setSlackSent] = useState(false);
+  const [notification, setNotification] = useState(null);
+  const [fileSaving, setFileSaving] = useState(false);
+  const [fileSaved, setFileSaved] = useState(false);
 
   // ============================================
   // BUILT-IN SCALES WITH VALIDATED IMPLEMENTATION
@@ -354,14 +357,19 @@ ${calcCode}
 `;
   };
 
+  const showNotification = (message, type = 'info') => {
+    setNotification({ message, type });
+    setTimeout(() => setNotification(null), 5000);
+  };
+
   const sendToSlack = async () => {
     setSlackSending(true);
     setError('');
     try {
-      const message = calculationResult 
+      const message = calculationResult
         ? `🏥 *${scaleName}*\n\n📊 *Result:* ${calculationResult.score}\n${calculationResult.category}\n${calculationResult.interpretation}\n\n💊 ${calculationResult.management}`
         : `🏥 *${scaleName}*\n\`\`\`${generatedCode.substring(0, 2500)}\`\`\``;
-      
+
       const response = await fetch('/api/slack', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -380,21 +388,77 @@ ${calcCode}
     }
   };
 
-  const downloadFile = () => {
-    const blob = new Blob([generatedCode], { type: 'text/plain' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `${(scaleName || 'scale').toLowerCase().replace(/[^a-z0-9]+/g, '_')}.py`;
-    a.click();
-    URL.revokeObjectURL(url);
+  const saveToRepository = async () => {
+    setFileSaving(true);
+    setError('');
+    try {
+      const fileName = (scaleName || 'scale').toLowerCase().replace(/[^a-z0-9]+/g, '_');
+
+      const response = await fetch('/api/save-scale', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fileName, content: generatedCode })
+      });
+
+      const data = await response.json();
+
+      if (response.ok) {
+        setFileSaved(true);
+        showNotification(`✅ Arquivo salvo com sucesso em: ${data.filePath}`, 'success');
+        setTimeout(() => setFileSaved(false), 3000);
+      } else {
+        throw new Error(data.error || 'Failed to save file');
+      }
+    } catch (err) {
+      setError('Erro ao salvar arquivo: ' + err.message);
+      showNotification('❌ Erro ao salvar arquivo no repositório', 'error');
+    } finally {
+      setFileSaving(false);
+    }
   };
 
   const processInput = async () => {
     setIsLoading(true);
     setError('');
     const inputLower = inputText.toLowerCase();
-    
+
+    // Extract potential scale name from input
+    let potentialScaleName = inputText.trim().split('\n')[0].substring(0, 100);
+
+    // Check if scale already exists in built-in or repository
+    for (const [key, scale] of Object.entries(BUILT_IN_SCALES)) {
+      const keyLower = key.toLowerCase();
+      const nameLower = scale.name.toLowerCase();
+      if (inputLower.includes(keyLower) || inputLower.includes(nameLower) ||
+          (key === 'CHA2DS2-VASc' && (inputLower.includes('cha2ds2') || inputLower.includes('chads'))) ||
+          (key === 'CURB-65' && inputLower.includes('curb')) ||
+          (key === 'Wells-DVT' && inputLower.includes('wells') && inputLower.includes('dvt')) ||
+          (key === 'MELD' && inputLower.includes('meld')) ||
+          (key === 'Cockcroft-Gault' && (inputLower.includes('cockcroft') || inputLower.includes('crcl') || inputLower.includes('creatinine clearance')))) {
+        potentialScaleName = scale.name;
+        break;
+      }
+    }
+
+    // Check if file already exists in repository
+    try {
+      const checkResponse = await fetch('/api/check-scale', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ scaleName: potentialScaleName })
+      });
+      const checkData = await checkResponse.json();
+
+      if (checkData.exists) {
+        setIsLoading(false);
+        showNotification(`⚠️ A escala "${potentialScaleName}" já existe no repositório em: ${checkData.filePath}. Não é necessário criá-la novamente.`, 'warning');
+        return;
+      }
+    } catch (err) {
+      console.error('Error checking scale existence:', err);
+      // Continue processing if check fails
+    }
+
     // Check for built-in scales
     for (const [key, scale] of Object.entries(BUILT_IN_SCALES)) {
       const keyLower = key.toLowerCase();
@@ -615,6 +679,9 @@ ${inputText}`
     setAutoTestResults(null);
     setShowAutoTests(false);
     setSlackSent(false);
+    setNotification(null);
+    setFileSaved(false);
+    setFileSaving(false);
   };
 
   return (
@@ -622,6 +689,17 @@ ${inputText}`
       <div className="max-w-4xl mx-auto">
         <h1 className="text-2xl font-bold text-blue-400 mb-1">🏥 Clinical Scales Extractor</h1>
         <p className="text-gray-400 text-sm mb-4">Extract → Validate → Test → Share</p>
+
+        {notification && (
+          <div className={`p-3 rounded mb-4 text-sm border ${
+            notification.type === 'success' ? 'bg-green-900/50 border-green-500 text-green-200' :
+            notification.type === 'warning' ? 'bg-yellow-900/50 border-yellow-500 text-yellow-200' :
+            notification.type === 'error' ? 'bg-red-900/50 border-red-500 text-red-200' :
+            'bg-blue-900/50 border-blue-500 text-blue-200'
+          }`}>
+            {notification.message}
+          </div>
+        )}
 
         {error && (
           <div className="bg-red-900/50 border border-red-500 text-red-200 p-3 rounded mb-4 text-sm">
@@ -672,9 +750,15 @@ ${inputText}`
               <h2 className="text-lg font-semibold text-green-400">✅ {scaleName}</h2>
               <div className="flex gap-2">
                 <button onClick={() => navigator.clipboard.writeText(generatedCode)} className="bg-gray-700 hover:bg-gray-600 px-3 py-1 rounded text-sm">📋</button>
-                <button onClick={downloadFile} className="bg-purple-600 hover:bg-purple-700 px-3 py-1 rounded text-sm">⬇️ .py</button>
-                <button 
-                  onClick={sendToSlack} 
+                <button
+                  onClick={saveToRepository}
+                  disabled={fileSaving}
+                  className={`px-3 py-1 rounded text-sm ${fileSaved ? 'bg-green-600' : 'bg-purple-600 hover:bg-purple-700'}`}
+                >
+                  {fileSaving ? '⏳' : fileSaved ? '✅ Salvo' : '💾 Salvar'}
+                </button>
+                <button
+                  onClick={sendToSlack}
                   disabled={slackSending}
                   className={`px-3 py-1 rounded text-sm ${slackSent ? 'bg-green-600' : 'bg-pink-600 hover:bg-pink-700'}`}
                 >
@@ -840,9 +924,15 @@ ${inputText}`
               <div className="flex gap-3 flex-wrap">
                 <button onClick={reset} className="bg-green-600 hover:bg-green-700 px-4 py-2 rounded text-sm">✅ New Scale</button>
                 <button onClick={() => setStep('code')} className="bg-yellow-600 hover:bg-yellow-700 px-4 py-2 rounded text-sm">🔄 Adjust</button>
-                <button onClick={downloadFile} className="bg-purple-600 hover:bg-purple-700 px-4 py-2 rounded text-sm">⬇️ Download</button>
-                <button 
-                  onClick={sendToSlack} 
+                <button
+                  onClick={saveToRepository}
+                  disabled={fileSaving}
+                  className={`px-4 py-2 rounded text-sm ${fileSaved ? 'bg-green-600' : 'bg-purple-600 hover:bg-purple-700'}`}
+                >
+                  {fileSaving ? '⏳ Salvando...' : fileSaved ? '✅ Salvo!' : '💾 Salvar no Repositório'}
+                </button>
+                <button
+                  onClick={sendToSlack}
                   disabled={slackSending}
                   className={`px-4 py-2 rounded text-sm ${slackSent ? 'bg-green-600' : 'bg-pink-600 hover:bg-pink-700'}`}
                 >
