@@ -4,6 +4,9 @@
  * Quick test to verify Firestore connection is working
  */
 
+// Load environment variables from .env.local
+require('dotenv').config({ path: '.env.local' });
+
 const { initializeFirestore, FirestoreHelpers } = require('../database/firestore');
 
 async function testConnection() {
