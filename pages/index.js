@@ -517,21 +517,49 @@ ${calcCode}
     try {
       const fileName = (scaleName || 'scale').toLowerCase().replace(/[^a-z0-9]+/g, '_');
 
-      const response = await fetch('/api/save-scale', {
+      // 1. Save as .py file to GitHub
+      const fileResponse = await fetch('/api/save-scale', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ fileName, content: generatedCode })
       });
 
-      const data = await response.json();
+      const fileData = await fileResponse.json();
 
-      if (response.ok) {
-        setFileSaved(true);
-        showNotification(`✅ Arquivo salvo com sucesso em: ${data.filePath}`, 'success');
-        setTimeout(() => setFileSaved(false), 3000);
-      } else {
-        throw new Error(data.error || 'Failed to save file');
+      if (!fileResponse.ok) {
+        throw new Error(fileData.error || 'Failed to save file to GitHub');
       }
+
+      showNotification(`✅ Arquivo .py salvo no GitHub: ${fileData.filePath}`, 'success');
+
+      // 2. Save to Firestore database
+      try {
+        const firestoreResponse = await fetch('/api/firestore/save-to-database', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            scaleData: scaleData,
+            variables: variables,
+            calculateFunction: generatedCode
+          })
+        });
+
+        const firestoreData = await firestoreResponse.json();
+
+        if (firestoreResponse.ok) {
+          showNotification(`✅ Escala salva no Firestore: ${firestoreData.scale?.code_name || 'success'}`, 'success');
+        } else {
+          console.error('Firestore save failed:', firestoreData.error);
+          showNotification(`⚠️ Arquivo salvo no GitHub, mas erro ao salvar no Firestore: ${firestoreData.error}`, 'warning');
+        }
+      } catch (firestoreErr) {
+        console.error('Firestore error:', firestoreErr);
+        showNotification(`⚠️ Arquivo salvo no GitHub, mas erro ao salvar no Firestore: ${firestoreErr.message}`, 'warning');
+      }
+
+      setFileSaved(true);
+      setTimeout(() => setFileSaved(false), 3000);
+
     } catch (err) {
       setError('Erro ao salvar arquivo: ' + err.message);
       showNotification('❌ Erro ao salvar arquivo no repositório', 'error');
