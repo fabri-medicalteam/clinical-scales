@@ -9,6 +9,13 @@
  * 2. Variable entity documents
  */
 
+const {
+  getStandardUnit,
+  getPossibleUnits,
+  inferMeasurementType,
+  formatUnitForPython
+} = require('./unit_definitions');
+
 /**
  * Generate Scale entity document for database
  *
@@ -99,8 +106,27 @@ function generateVariableEntities(variables, language = 'en') {
         ? v.options.map(o => o.value)
         : [];
     } else {
-      entity.standardized_unit_of_measurement = v.unit || 'unit';
-      entity.possible_units = [v.unit || 'unit'];
+      // Infer measurement type from variable name/description
+      const measurementType = inferMeasurementType(v.name || v.description || '');
+
+      // Get standard and possible units for this measurement type
+      const standardUnit = getStandardUnit(measurementType);
+      const possibleUnitsList = getPossibleUnits(measurementType);
+
+      // Use provided unit or inferred standard unit
+      const currentUnit = v.unit || standardUnit || 'unit';
+
+      // Convert unit to Python Pint format
+      const standardUnitPython = formatUnitForPython(currentUnit);
+
+      entity.standardized_unit_of_measurement = standardUnitPython;
+
+      // Build possible units array (values only, not labels)
+      entity.possible_units = possibleUnitsList.length > 0
+        ? possibleUnitsList.map(u => formatUnitForPython(u.value))
+        : [standardUnitPython];
+
+      entity.measurement_type = measurementType;
       entity.min_value = v.min;
       entity.max_value = v.max;
     }
@@ -110,16 +136,49 @@ function generateVariableEntities(variables, language = 'en') {
 }
 
 /**
- * Generate calculate function as Python string
+ * Generate calculate function as Python string with unit conversion support
  */
 function generateCalculateFunction(variables, formula) {
-  const params = variables.map(v => v.name).join(', ');
+  // Check if any variable needs unit conversion
+  const needsUnitConversion = variables.some(v =>
+    v.type !== 'select' && v.unit && v.unit !== 'unit'
+  );
+
+  // Build parameter signature with units
+  const params = variables.map(v => {
+    if (v.type === 'select' || !v.unit || v.unit === 'unit') {
+      return v.name;
+    }
+    return `${v.name}, ${v.name}_unit='${v.unit}'`;
+  }).join(', ');
+
+  // Build unit conversion code
+  let conversionCode = '';
+  if (needsUnitConversion) {
+    conversionCode = `
+    # Import unit converter
+    try:
+        from utils.unit_converter import normalize_to_standard
+    except ImportError:
+        # Fallback: no conversion if module not available
+        def normalize_to_standard(value, unit, measure_type):
+            return value
+
+    # Convert all inputs to standard units
+`;
+    variables.forEach(v => {
+      if (v.type !== 'select' && v.unit && v.unit !== 'unit') {
+        const measurementType = inferMeasurementType(v.name || v.description || '');
+        conversionCode += `    ${v.name} = normalize_to_standard(${v.name}, ${v.name}_unit, '${measurementType}')\n`;
+      }
+    });
+  }
 
   if (formula === 'SUM_OF_POINTS' || !formula) {
     return `def calculate(${params}):
-    """Calculate scale value by summing all points."""
+    """Calculate scale value by summing all points."""${conversionCode}
     score = 0
-    for value in [${params}]:
+    for value in [${variables.map(v => v.name).join(', ')}]:
         if value is not None:
             score += int(value) if isinstance(value, (int, float, str)) and str(value).lstrip('-').replace('.','').isdigit() else 0
     return score`;
@@ -131,7 +190,7 @@ function generateCalculateFunction(variables, formula) {
   });
 
   return `def calculate(${params}):
-    """Calculate scale value using formula: ${formula}"""
+    """Calculate scale value using formula: ${formula}"""${conversionCode}
     try:
         result = ${pythonFormula}
         return result

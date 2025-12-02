@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { getPossibleUnits, inferMeasurementType, formatUnitForDisplay } from '../utils/unit_definitions';
 
 export default function Home() {
   const [step, setStep] = useState('input');
@@ -6,6 +7,7 @@ export default function Home() {
   const [generatedCode, setGeneratedCode] = useState('');
   const [variables, setVariables] = useState([]);
   const [testValues, setTestValues] = useState({});
+  const [selectedUnits, setSelectedUnits] = useState({});
   const [calculationResult, setCalculationResult] = useState(null);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
@@ -974,35 +976,59 @@ ${inputText}`
             <div className="bg-gray-800 border border-gray-700 rounded p-4">
               <h3 className="font-medium mb-3 text-sm">🧪 Enter values:</h3>
               <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-                {variables.map((v) => (
-                  <div key={v.name}>
-                    <label className="block text-xs text-gray-400 mb-1">
-                      {v.description} {v.unit && `(${v.unit})`}
-                    </label>
-                    {v.type === 'select' && v.options ? (
-                      <select
-                        className="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-sm"
-                        value={testValues[v.name] ?? ''}
-                        onChange={(e) => setTestValues({ ...testValues, [v.name]: e.target.value })}
-                      >
-                        {v.options.map((o) => (
-                          <option key={o.value} value={o.value}>
-                            {o.label} {o.points !== undefined && o.points !== 0 ? `(+${o.points})` : ''}
-                          </option>
-                        ))}
-                      </select>
-                    ) : (
-                      <input
-                        type="number"
-                        step="any"
-                        className="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-sm"
-                        value={testValues[v.name] ?? ''}
-                        onChange={(e) => setTestValues({ ...testValues, [v.name]: e.target.value === '' ? '' : parseFloat(e.target.value) })}
-                        placeholder={v.min !== undefined ? `${v.min}-${v.max}` : ''}
-                      />
-                    )}
-                  </div>
-                ))}
+                {variables.map((v) => {
+                  // Get possible units for this variable
+                  const measurementType = inferMeasurementType(v.name || v.description || '');
+                  const possibleUnits = getPossibleUnits(measurementType);
+                  const hasUnits = possibleUnits.length > 0 && v.type !== 'select';
+                  const currentUnit = selectedUnits[v.name] || v.unit || (possibleUnits[0]?.value);
+
+                  return (
+                    <div key={v.name}>
+                      <label className="block text-xs text-gray-400 mb-1">
+                        {v.description}
+                      </label>
+                      {v.type === 'select' && v.options ? (
+                        <select
+                          className="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-sm"
+                          value={testValues[v.name] ?? ''}
+                          onChange={(e) => setTestValues({ ...testValues, [v.name]: e.target.value })}
+                        >
+                          {v.options.map((o) => (
+                            <option key={o.value} value={o.value}>
+                              {o.label} {o.points !== undefined && o.points !== 0 ? `(+${o.points})` : ''}
+                            </option>
+                          ))}
+                        </select>
+                      ) : (
+                        <div className="flex gap-1">
+                          <input
+                            type="number"
+                            step="any"
+                            className="flex-1 bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-sm"
+                            value={testValues[v.name] ?? ''}
+                            onChange={(e) => setTestValues({ ...testValues, [v.name]: e.target.value === '' ? '' : parseFloat(e.target.value) })}
+                            placeholder={v.min !== undefined ? `${v.min}-${v.max}` : ''}
+                          />
+                          {hasUnits && (
+                            <select
+                              className="w-20 bg-gray-700 border border-gray-600 rounded px-1 py-1.5 text-xs"
+                              value={currentUnit}
+                              onChange={(e) => setSelectedUnits({ ...selectedUnits, [v.name]: e.target.value })}
+                              title="Unit"
+                            >
+                              {possibleUnits.map((unit) => (
+                                <option key={unit.value} value={unit.value}>
+                                  {formatUnitForDisplay(unit.value)}
+                                </option>
+                              ))}
+                            </select>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
 
               {showManualEdit && !scaleData?.isBuiltIn && (
